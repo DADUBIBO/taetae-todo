@@ -1,0 +1,15 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        "todos": {
+          ".read": "auth != null && auth.uid == $uid",
+          "$todoId": {
+            ".write": "auth != null && auth.uid == $uid",
+            ".validate": "newData.hasChildren(['text', 'done']) && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 200 && newData.child('done').isBoolean()"
+          }
+        }
+      }
+    }
+  }
+}

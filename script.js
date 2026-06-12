@@ -9,11 +9,16 @@ import {
   onValue,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-database.js";
+import {
+  getAuth,
+  onAuthStateChanged,
+  signInAnonymously,
+} from "https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js";
 import { firebaseConfig } from "./env.js";
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
-const todosRef = ref(db, "todos");
+const auth = getAuth(app);
 
 const todoForm = document.getElementById("todo-form");
 const todoInput = document.getElementById("todo-input");
@@ -25,6 +30,25 @@ const editInput = document.getElementById("edit-input");
 
 let todos = [];
 let editId = null;
+let userTodosPath = "";
+let unsubscribeTodos = null;
+
+function setInputEnabled(isEnabled) {
+  const submitButton = todoForm.querySelector("button[type='submit']");
+  todoInput.disabled = !isEnabled;
+
+  if (submitButton) {
+    submitButton.disabled = !isEnabled;
+  }
+}
+
+function requireUserTodosPath() {
+  if (!userTodosPath) {
+    throw new Error("User is not authenticated yet.");
+  }
+
+  return userTodosPath;
+}
 
 function renderTodos() {
   todoList.innerHTML = "";
@@ -71,6 +95,7 @@ function renderTodos() {
 }
 
 async function addTodo(text) {
+  const todosRef = ref(db, requireUserTodosPath());
   const newTodoRef = push(todosRef);
   await set(newTodoRef, {
     text: text.trim(),
@@ -97,14 +122,14 @@ function closeEditModal() {
 }
 
 async function updateTodo(id, newText) {
-  const todoRef = ref(db, `todos/${id}`);
+  const todoRef = ref(db, `${requireUserTodosPath()}/${id}`);
   await update(todoRef, {
     text: newText.trim(),
   });
 }
 
 async function removeTodo(id) {
-  const todoRef = ref(db, `todos/${id}`);
+  const todoRef = ref(db, `${requireUserTodosPath()}/${id}`);
   await remove(todoRef);
   if (editId === id) {
     closeEditModal();
@@ -115,7 +140,7 @@ async function toggleDone(id) {
   const todo = todos.find((item) => item.id === id);
   if (!todo) return;
 
-  const todoRef = ref(db, `todos/${id}`);
+  const todoRef = ref(db, `${requireUserTodosPath()}/${id}`);
   await update(todoRef, {
     done: !todo.done,
   });
@@ -131,15 +156,19 @@ todoForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (editId !== null) {
-    await updateTodo(editId, newText);
-    closeEditModal();
-  } else {
-    await addTodo(newText);
-  }
+  try {
+    if (editId !== null) {
+      await updateTodo(editId, newText);
+      closeEditModal();
+    } else {
+      await addTodo(newText);
+    }
 
-  todoInput.value = "";
-  todoInput.focus();
+    todoInput.value = "";
+    todoInput.focus();
+  } catch (error) {
+    console.error("Failed to save todo:", error);
+  }
 });
 
 editForm.addEventListener("submit", async (event) => {
@@ -152,8 +181,12 @@ editForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  await updateTodo(editId, updatedText);
-  closeEditModal();
+  try {
+    await updateTodo(editId, updatedText);
+    closeEditModal();
+  } catch (error) {
+    console.error("Failed to update todo:", error);
+  }
 });
 
 editModal.addEventListener("click", (event) => {
@@ -168,11 +201,48 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-onValue(todosRef, (snapshot) => {
-  const data = snapshot.val() || {};
-  todos = Object.keys(data)
-    .map((key) => ({ id: key, ...data[key] }))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+function subscribeTodos(path) {
+  if (unsubscribeTodos) {
+    unsubscribeTodos();
+  }
+
+  const todosRef = ref(db, path);
+  unsubscribeTodos = onValue(todosRef, (snapshot) => {
+    const data = snapshot.val() || {};
+    todos = Object.keys(data)
+      .map((key) => ({ id: key, ...data[key] }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    renderTodos();
+  }, (error) => {
+    console.error("Failed to load todos:", error);
+    todos = [];
+    emptyState.textContent = "할 일을 불러오지 못했습니다.";
+    renderTodos();
+  });
+}
+
+setInputEnabled(false);
+emptyState.textContent = "로그인 준비 중입니다.";
+
+onAuthStateChanged(auth, (user) => {
+  if (!user) {
+    userTodosPath = "";
+    todos = [];
+    setInputEnabled(false);
+    renderTodos();
+    return;
+  }
+
+  userTodosPath = `users/${user.uid}/todos`;
+  setInputEnabled(true);
+  emptyState.textContent = "추가된 할 일이 없습니다.";
+  subscribeTodos(userTodosPath);
+});
+
+signInAnonymously(auth).catch((error) => {
+  console.error("Failed to sign in anonymously:", error);
+  setInputEnabled(false);
+  emptyState.textContent = "로그인에 실패했습니다.";
   renderTodos();
 });
 
